@@ -121,13 +121,35 @@ static block_t *block_from_payload(void *ptr) {
 /**
  * coalesce_free_blocks - Merges adjacent free blocks in the heap into
  *      single, larger free blocks. (Checkpoint 3)
- *
- * __attribute__((unused)) stops the compiler from warning that this
- * function is never called. You can remove it once you call it.
  */
-__attribute__((unused))
 static void coalesce_free_blocks(void) {
-    // TODO (Checkpoint 3)
+    block_t *curr = mm_heap_first;
+
+    while (curr != NULL && curr <= mm_heap_last) {
+        if (!is_allocated(curr)) {
+            size_t combined_size = get_size(curr);
+            block_t *next = (void *) curr + combined_size;
+
+            // Merge all contiguous free blocks following curr
+            while (next <= mm_heap_last && !is_allocated(next)) {
+                combined_size += get_size(next);
+                if (next == mm_heap_last) {
+                    mm_heap_last = curr;
+                }
+                next = (void *) next + get_size(next);
+            }
+
+            if (combined_size > get_size(curr)) {
+                set_header(curr, combined_size, false);
+            }
+        }
+
+        size_t size = get_size(curr);
+        if (size == 0) {
+            break;
+        }
+        curr = (void *) curr + size;
+    }
 }
 
 
@@ -161,13 +183,29 @@ bool mm_init(void) {
  * allocated block. Returns NULL if the heap cannot grow.
  */
 void *mm_malloc(size_t size) {
+    // Perform delayed coalescing before looking for a free block (Checkpoint 3)
+    coalesce_free_blocks();
+
     // The block must have enough space for a header and be 16-byte aligned
     size = round_up(sizeof(block_t) + size, ALIGNMENT);
 
     // If there is a large enough free block, use it
     block_t *block = find_fit(size);
     if (block != NULL) {
-        set_header(block, get_size(block), true);
+        size_t block_size = get_size(block);
+        size_t remainder = block_size - size;
+
+        // Split the block if remaining space can hold a valid block (Checkpoint 2)
+        if (remainder >= ALIGNMENT + sizeof(block_t)) {
+            set_header(block, size, true);
+            block_t *next = (void *) block + size;
+            set_header(next, remainder, false);
+            if (block == mm_heap_last) {
+                mm_heap_last = next;
+            }
+        } else {
+            set_header(block, block_size, true);
+        }
         return block->payload;
     }
 
@@ -216,9 +254,27 @@ void mm_free(void *ptr) {
  * If size is 0, behaves like mm_free(old_ptr) and returns NULL.
  */
 void *mm_realloc(void *old_ptr, size_t size) {
-    (void) old_ptr;
-    (void) size;
-    return NULL;
+    if (old_ptr == NULL) {
+        return mm_malloc(size);
+    }
+    if (size == 0) {
+        mm_free(old_ptr);
+        return NULL;
+    }
+
+    void *new_ptr = mm_malloc(size);
+    if (new_ptr == NULL) {
+        return NULL;
+    }
+
+    block_t *block = block_from_payload(old_ptr);
+    size_t old_payload_size = get_size(block) - sizeof(block_t);
+    size_t copy_size = (old_payload_size < size) ? old_payload_size : size;
+
+    memcpy(new_ptr, old_ptr, copy_size);
+    mm_free(old_ptr);
+
+    return new_ptr;
 }
 
 /**
@@ -228,9 +284,12 @@ void *mm_realloc(void *old_ptr, size_t size) {
  * byte set to 0, and returns a pointer to it.
  */
 void *mm_calloc(size_t nmemb, size_t size) {
-    (void) nmemb;
-    (void) size;
-    return NULL;
+    size_t total_bytes = nmemb * size;
+    void *ptr = mm_malloc(total_bytes);
+    if (ptr != NULL) {
+        memset(ptr, 0, total_bytes);
+    }
+    return ptr;
 }
 
 /**
